@@ -12,41 +12,39 @@ const HEADERS = [
   'Risk Level', 'Counselor Notes',
 ];
 
-/**
- * Handles both formats Netlify/Vercel may store the key:
- *   1. Literal \n  →  "-----BEGIN...\nMIIE..."   (env var with escaped newlines)
- *   2. Real newlines →  "-----BEGIN...\nMIIE..."  (multi-line env var)
- */
-function parsePrivateKey(raw: string | undefined): string {
-  if (!raw) return '';
-  // Replace literal backslash-n with actual newline
-  return raw.replace(/\\n/g, '\n');
-}
-
 function getSheets() {
-  const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
-  const privateKey = parsePrivateKey(process.env.GOOGLE_PRIVATE_KEY);
+  // Decode the entire service account JSON from base64 — no newline issues
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_BASE64;
+  if (!raw) throw new Error('GOOGLE_SERVICE_ACCOUNT_BASE64 env var is missing');
+
+  const credentials = JSON.parse(
+    Buffer.from(raw, 'base64').toString('utf-8')
+  );
 
   const auth = new google.auth.GoogleAuth({
-    credentials: {
-      client_email: clientEmail,
-      private_key: privateKey,
-    },
+    credentials,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
 
   return google.sheets({ version: 'v4', auth });
 }
 
-// GET — debug endpoint: confirms env vars are loaded (safe, no secrets exposed)
+// GET — debug: confirm env vars are loaded
 export async function GET() {
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_BASE64;
+  let decoded: Record<string, string> = {};
+  try {
+    decoded = JSON.parse(Buffer.from(raw ?? '', 'base64').toString('utf-8'));
+  } catch {
+    /* ignore */
+  }
+
   return NextResponse.json({
     status: 'ok',
     configured: {
-      hasEmail: !!process.env.GOOGLE_CLIENT_EMAIL,
-      emailPrefix: process.env.GOOGLE_CLIENT_EMAIL?.split('@')[0] ?? 'missing',
-      hasKey: !!process.env.GOOGLE_PRIVATE_KEY,
-      keyStart: process.env.GOOGLE_PRIVATE_KEY?.slice(0, 27) ?? 'missing',
+      hasBase64Key: !!raw,
+      base64Length: raw?.length ?? 0,
+      clientEmail: decoded?.client_email ?? 'not decoded',
       hasSheetId: !!process.env.GOOGLE_SHEET_ID,
       sheetTab: process.env.GOOGLE_SHEET_TAB ?? 'missing',
     },
@@ -56,12 +54,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const spreadsheetId = process.env.GOOGLE_SHEET_ID;
 
-  if (!process.env.GOOGLE_CLIENT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY || !spreadsheetId) {
-    console.error('Missing env vars:', {
-      hasEmail: !!process.env.GOOGLE_CLIENT_EMAIL,
-      hasKey: !!process.env.GOOGLE_PRIVATE_KEY,
-      hasSheetId: !!spreadsheetId,
-    });
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_BASE64 || !spreadsheetId) {
     return NextResponse.json({ error: 'Google Sheets not configured' }, { status: 500 });
   }
 
