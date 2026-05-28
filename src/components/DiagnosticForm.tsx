@@ -216,6 +216,7 @@ export default function DiagnosticForm() {
   const [s3, setS3] = useState<Step3Data>(initialStep3);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
 
   const setField1 = (key: keyof Step1Data, val: string) =>
     setS1((prev) => ({ ...prev, [key]: val }));
@@ -302,7 +303,13 @@ export default function DiagnosticForm() {
     };
 
     localStorage.setItem('upsc-result', JSON.stringify(resultData));
-    submitToSheets(resultData);
+
+    const { success, error } = await submitToSheets(resultData);
+    if (!success) {
+      console.error('Submission error:', error);
+      setSubmitError('Data saved locally but could not sync to sheet. Please screenshot this error: ' + error);
+    }
+
     router.push('/result');
   }
 
@@ -522,6 +529,12 @@ export default function DiagnosticForm() {
             onChange={(v) => setField3('testPractice', v)}
             error={errors.testPractice}
           />
+        </div>
+      )}
+
+      {submitError && (
+        <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600 break-all">
+          ⚠ {submitError}
         </div>
       )}
 

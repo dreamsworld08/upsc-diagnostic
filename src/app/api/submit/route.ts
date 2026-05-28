@@ -12,13 +12,44 @@ const HEADERS = [
   'Risk Level', 'Counselor Notes',
 ];
 
-function getAuth() {
-  return new google.auth.GoogleAuth({
+/**
+ * Handles both formats Netlify/Vercel may store the key:
+ *   1. Literal \n  →  "-----BEGIN...\nMIIE..."   (env var with escaped newlines)
+ *   2. Real newlines →  "-----BEGIN...\nMIIE..."  (multi-line env var)
+ */
+function parsePrivateKey(raw: string | undefined): string {
+  if (!raw) return '';
+  // Replace literal backslash-n with actual newline
+  return raw.replace(/\\n/g, '\n');
+}
+
+function getSheets() {
+  const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
+  const privateKey = parsePrivateKey(process.env.GOOGLE_PRIVATE_KEY);
+
+  const auth = new google.auth.GoogleAuth({
     credentials: {
-      client_email: process.env.GOOGLE_CLIENT_EMAIL,
-      private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+      client_email: clientEmail,
+      private_key: privateKey,
     },
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  });
+
+  return google.sheets({ version: 'v4', auth });
+}
+
+// GET — debug endpoint: confirms env vars are loaded (safe, no secrets exposed)
+export async function GET() {
+  return NextResponse.json({
+    status: 'ok',
+    configured: {
+      hasEmail: !!process.env.GOOGLE_CLIENT_EMAIL,
+      emailPrefix: process.env.GOOGLE_CLIENT_EMAIL?.split('@')[0] ?? 'missing',
+      hasKey: !!process.env.GOOGLE_PRIVATE_KEY,
+      keyStart: process.env.GOOGLE_PRIVATE_KEY?.slice(0, 27) ?? 'missing',
+      hasSheetId: !!process.env.GOOGLE_SHEET_ID,
+      sheetTab: process.env.GOOGLE_SHEET_TAB ?? 'missing',
+    },
   });
 }
 
@@ -26,6 +57,11 @@ export async function POST(req: NextRequest) {
   const spreadsheetId = process.env.GOOGLE_SHEET_ID;
 
   if (!process.env.GOOGLE_CLIENT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY || !spreadsheetId) {
+    console.error('Missing env vars:', {
+      hasEmail: !!process.env.GOOGLE_CLIENT_EMAIL,
+      hasKey: !!process.env.GOOGLE_PRIVATE_KEY,
+      hasSheetId: !!spreadsheetId,
+    });
     return NextResponse.json({ error: 'Google Sheets not configured' }, { status: 500 });
   }
 
@@ -33,17 +69,18 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
   try {
-    const sheets = google.sheets({ version: 'v4', auth: getAuth() });
+    const sheets = getSheets();
 
-    // Auto-add headers on first submission
+    // Auto-create headers on first submission
     const check = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: `${SHEET_NAME}!A1`,
     });
+
     if (!check.data.values?.length) {
       await sheets.spreadsheets.values.update({
         spreadsheetId,
@@ -54,7 +91,7 @@ export async function POST(req: NextRequest) {
     }
 
     const row = [
-      body.timestamp ?? '',
+      body.timestamp ?? new Date().toISOString(),
       body.name ?? '',
       body.phone ?? '',
       body.email ?? '',
@@ -78,7 +115,7 @@ export async function POST(req: NextRequest) {
       body.segment ?? '',
       body.recommendation ?? '',
       body.riskLevel ?? '',
-      '', // Counselor Notes — filled manually
+      '',
     ];
 
     await sheets.spreadsheets.values.append({
@@ -90,8 +127,10 @@ export async function POST(req: NextRequest) {
     });
 
     return NextResponse.json({ success: true });
-  } catch (err) {
-    console.error('Sheets API error:', err);
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('Sheets API error:', message);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
